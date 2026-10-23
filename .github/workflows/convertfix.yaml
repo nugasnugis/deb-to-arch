@@ -16,12 +16,8 @@ jobs:
       options: --privileged 
 
     steps:
-    - name: Checkout Code
-      uses: actions/checkout@v4
-
-    - name: Fix Workspace Permissions
-      run: chown -R root:root ${{ github.workspace }}
-
+    # Removed the checkout and chown steps to completely avoid directory permission errors Tar up the build environment
+     
     - name: Setup Environment and Build Dependencies
       run: |
         pacman-key --init
@@ -36,7 +32,7 @@ jobs:
       run: |
         sudo -u builder bash -c '
           cd /home/builder
-          git clone https://aur.archlinux.org/fakeroot-tcp.git
+          git clone https://archlinux.org
           cd fakeroot-tcp
           makepkg -si --noconfirm
         '
@@ -45,7 +41,7 @@ jobs:
       run: |
         sudo -u builder bash -c '
           cd /home/builder
-          git clone https://aur.archlinux.org/debtap.git
+          git clone https://archlinux.org
           cd debtap
           makepkg -si --noconfirm
         '
@@ -60,14 +56,9 @@ jobs:
         sudo -u builder bash -c '
           cd /home/builder
           wget -O package.deb "${{ github.event.inputs.deb_url }}"
-          # Added yes "" | to bypass the interactive prompts entirely
+          # Automatically bypasses configuration prompts
           yes "" | debtap package.deb
         '
-
-    - name: Move Artifact to Workspace
-      run: |
-        cp /home/builder/*.pkg.tar.* "${{ github.workspace }}/"
-        chmod 644 ${{ github.workspace }}/*.pkg.tar.*
 
     - name: Install Node.js for Artifact Upload
       run: pacman -S --noconfirm nodejs
@@ -76,5 +67,6 @@ jobs:
       uses: actions/upload-artifact@v4
       with:
         name: arch-package
-        path: ${{ github.workspace }}/*.pkg.tar.*
+        # Targets the package right inside the builder's home directory
+        path: /home/builder/*.pkg.tar.*
         if-no-files-found: error
