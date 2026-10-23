@@ -16,49 +16,29 @@ jobs:
       options: --privileged 
 
     steps:
-    # Removed the checkout and chown steps to completely avoid directory permission errors Tar up the build environment
-     
-    - name: Setup Environment and Build Dependencies
+    # Set up system tools and download the official standalone debtap script directly
+    - name: Setup Environment and Install Tools
       run: |
         pacman-key --init
         pacman-key --populate archlinux
-        pacman -Syu --noconfirm --needed base-devel git wget sudo pkgfile
+        pacman -Syu --noconfirm --needed base-devel git wget zstd pkgfile
         
-        # Create builder user and map it cleanly
-        useradd -m builder
-        echo "builder ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers
-        
-    - name: Install fakeroot-tcp (Required for Docker containers)
-      run: |
-        sudo -u builder bash -c '
-          cd /home/builder
-          git clone https://archlinux.org
-          cd fakeroot-tcp
-          makepkg -si --noconfirm
-        '
-
-    - name: Install Debtap
-      run: |
-        sudo -u builder bash -c '
-          cd /home/builder
-          git clone https://archlinux.org
-          cd debtap
-          makepkg -si --noconfirm
-        '
+        # Download debtap directly from source into the global execution path
+        wget -O /usr/bin/debtap https://githubusercontent.com
+        chmod +x /usr/bin/debtap
 
     - name: Update Debtap Database
       run: |
         pkgfile -u
-        sudo -u builder debtap -u
+        debtap -u
 
     - name: Download and Convert Package
       run: |
-        sudo -u builder bash -c '
-          cd /home/builder
-          wget -O package.deb "${{ github.event.inputs.deb_url }}"
-          # Automatically bypasses configuration prompts
-          yes "" | debtap package.deb
-        '
+        mkdir -p /workspace
+        cd /workspace
+        wget -O package.deb "${{ github.event.inputs.deb_url }}"
+        # Automatically bypasses all configuration prompts as root
+        yes "" | debtap package.deb
 
     - name: Install Node.js for Artifact Upload
       run: pacman -S --noconfirm nodejs
@@ -67,6 +47,5 @@ jobs:
       uses: actions/upload-artifact@v4
       with:
         name: arch-package
-        # Targets the package right inside the builder's home directory
-        path: /home/builder/*.pkg.tar.*
+        path: /workspace/*.pkg.tar.*
         if-no-files-found: error
