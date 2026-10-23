@@ -1,0 +1,89 @@
+name: Convert DEB to Arch Package
+
+on:
+  workflow_dispatch:
+    inputs:
+      deb_url:
+        description: 'Direct URL to the .deb package'
+        required: true
+        type: string
+
+jobs:
+  convert:
+    runs-on: ubuntu-latest
+
+    # We remove the global container setting so GitHub Actions can run natively,
+    # and spin up the container explicitly inside the run blocks or execute it safely.
+    # Alternatively, to keep your structure clean, we fix the permissions:
+    container:
+      image: archlinux:latest
+      options: --privileged 
+
+    steps:
+    - name: Checkout Code
+      uses: actions/checkout@v4
+
+    # Fix: Ensure the workspace directory permissions don't throw safe.directory errors
+    - name: Fix Workspace Permissions
+      run: chown -R root:root ${{ github.workspace }}
+
+    # Your original setup steps optimized
+    - name: Setup Environment and Build Dependencies
+      run: |
+        pacman-key --init
+        pacman-key --populate archlinux
+        pacman -Syu --noconfirm --needed base-devel git wget sudo pkgfile
+        
+        # Create builder user and map it cleanly
+        useradd -m builder
+        echo "builder ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers
+        
+    - name: Install fakeroot-tcp (Required for Docker containers)
+      run: |
+        sudo -u builder bash -c '
+          cd /home/builder
+          git clone https://aur.archlinux.org/fakeroot-tcp.git
+          cd fakeroot-tcp
+          makepkg -si --noconfirm --overwrite
+        '
+
+    - name: Install Debtap
+      run: |
+        sudo -u builder bash -c '
+          cd /home/builder
+          git clone https://aur.archlinux.org/debtap.git
+          cd debtap
+          makepkg -si --noconfirm
+        '
+
+    - name: Update Debtap Database
+      run: |
+        pkgfile -u
+        sudo -u builder debtap -u
+
+    - name: Download and Convert Package
+      run: |
+        sudo -u builder bash -c '
+          cd /home/builder
+          wget -O package.deb "${{ github.event.inputs.deb_url }}"
+          debtap -Q package.deb
+        '
+
+    # Fix: Move artifacts to the exact runner workspace and match permissions
+    - name: Move Artifact to Workspace
+      run: |
+        cp /home/builder/*.pkg.tar.* "${{ github.workspace }}/"
+        # Ensure the files are readable by the root/host process
+        chmod 644 ${{ github.workspace }}/*.pkg.tar.*
+
+    # Fix: action/artifact@v4 requires Node.js. Since archlinux:latest doesn't have it natively,
+    # we install it just-in-time for the runner to execute the javascript uploading code.
+    - name: Install Node.js for Artifact Upload
+      run: pacman -S --noconfirm nodejs
+
+    - name: Upload Arch Package Artifact
+      uses: actions/artifact@v4
+      with:
+        name: arch-package
+        path: ${{ github.workspace }}/*.pkg.tar.*
+        if-no-files-found: error
