@@ -1,0 +1,233 @@
+
+name: Build LinuxCamPAM for Archcraft
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 4 * * 1"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: linuxcampam-arch-build
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    container:
+      image: archlinux:latest
+
+    steps:
+      - name: Prepare Arch Build Environment
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          pacman-key --init
+          pacman-key --populate archlinux
+          pacman -Syu --noconfirm --needed \
+            base-devel \
+            git \
+            cmake \
+            ninja \
+            pkgconf \
+            pam \
+            hidapi \
+            nlohmann-json \
+            opencv \
+            python \
+            wget \
+            unzip \
+            curl \
+            v4l-utils \
+            systemd \
+            zstd \
+            file \
+            which \
+            gtest \
+            pandoc
+
+      - name: Create Build User
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          useradd -m -s /bin/bash builder
+          mkdir -p /build
+          chown builder:builder /build
+
+      - name: Write PKGBUILD
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cat > /build/PKGBUILD <<'PKGBUILD'
+          pkgname=linuxcampam
+          pkgver=0.9.7.5
+          pkgrel=1
+          pkgdesc="Linux PAM face authentication with OpenCV"
+          arch=('x86_64')
+          url="https://github.com/Vladush/LinuxCamPAM"
+          license=('MIT')
+
+          depends=(
+            pam
+            gcc-libs
+            glibc
+            hidapi
+            v4l-utils
+            systemd
+          )
+
+          makedepends=(
+            git
+            cmake
+            ninja
+            pkgconf
+            python
+            wget
+            unzip
+            gtest
+            pandoc
+          )
+
+          source=(
+            "LinuxCamPAM::git+https://github.com/Vladush/LinuxCamPAM.git"
+          )
+
+          sha256sums=('SKIP')
+
+          prepare() {
+            cd "$srcdir/LinuxCamPAM"
+
+            # Ensure PAM integration profile is NOT installed.
+            # The package must not activate PAM automatically.
+            sed -i \
+              's/^option(INSTALL_PAM_AUTH_UPDATE_PROFILE .*$/option(INSTALL_PAM_AUTH_UPDATE_PROFILE "Install Debian PAM profile" OFF)/' \
+              CMakeLists.txt
+
+            # Remove upstream automatic git hook installation.
+            # No repository hook should be installed by CMake.
+            sed -i '/Automatic Git Hook Installation/,/^endif()/d' \
+              CMakeLists.txt
+          }
+
+          build() {
+            cd "$srcdir/LinuxCamPAM"
+
+            # Static OpenCV build required by upstream.
+            # Uses Arch-specific flags from upstream script.
+            MAKE_JOBS="${MAKEFLAGS#-j}" \
+              SKIP_DEPS=1 \
+              ./scripts/build_opencv.sh
+
+            mkdir -p build
+            cd build
+
+            cmake .. \
+              -G Ninja \
+              -DCMAKE_BUILD_TYPE=Release \
+              -DCMAKE_INSTALL_PREFIX=/usr \
+              -DCMAKE_INSTALL_LIBDIR=lib \
+              -DLINUXCAMPAM_SYSTEMD_UNIT_DIR=/usr/lib/systemd/system \
+              -DINSTALL_PAM_AUTH_UPDATE_PROFILE=OFF \
+              -DDISABLE_WELCOME_MESSAGE=ON
+
+            ninja
+          }
+
+          package() {
+            cd "$srcdir/LinuxCamPAM"
+
+            # Stage files only. Never install to the runner OS.
+            DESTDIR="$pkgdir" cmake --install build
+
+            # Config should be a package-provided default.
+            install -Dm644 config/config.ini \
+              "$pkgdir/usr/share/linuxcampam/config.ini"
+
+            # PAM module needs the Arch security module directory.
+            install -d "$pkgdir/usr/lib/security"
+
+            if [[ -f "$pkgdir/usr/lib/security/pam_linuxcampam.so" ]]; then
+              :
+            else
+              echo "ERROR: PAM module not installed."
+              find "$pkgdir" -name 'pam_linuxcampam.so' -print
+              return 1
+            fi
+
+            # Do not ship Debian's PAM auto-configuration profile.
+            rm -f "$pkgdir/usr/share/pam-configs/linuxcampam"
+
+            # No auto activation, camera setup or PAM changes.
+            # The package only ships the unit file.
+            install -Dm644 scripts/linuxcampam.service \
+              "$pkgdir/usr/lib/systemd/system/linuxcampam.service"
+
+            # Keep default config out of /etc so existing user
+            # configuration is never overwritten.
+            rm -f "$pkgdir/etc/linuxcampam/config.ini"
+
+            # No auto-installed ONNX models in package:
+            # models are separately managed by the admin.
+          }
+          PKGBUILD
+
+          chmod 644 /build/PKGBUILD
+          chown builder:builder /build/PKGBUILD
+
+      - name: Build Arch Package
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cd /build
+
+          # Build as non-root, as makepkg requires.
+          su builder -s /bin/bash -c '
+            cd /build
+            makepkg --syncdeps --cleanbuild --noconfirm
+          '
+
+      - name: Validate Package
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          shopt -s nullglob
+          packages=(/build/*.pkg.tar.zst)
+
+          if (( ${#packages[@]} == 0 )); then
+            echo "ERROR: No Arch package generated"
+            exit 1
+          fi
+
+          for pkg in "${packages[@]}"; do
+            echo "===== Package ====="
+            pacman -Qip "$pkg"
+
+            echo "===== Package Files ====="
+            pacman -Qlp "$pkg"
+
+            echo "===== Check for PAM profile ====="
+            if tar -tf "$pkg" | grep -q 'pam-configs/linuxcampam'; then
+              echo "ERROR: Unexpected Debian PAM profile"
+              exit 1
+            fi
+
+            echo "===== Check package archive ====="
+            file "$pkg"
+          done
+
+      - name: Upload Arch Package
+        uses: actions/upload-artifact@v4
+        with:
+          name: linuxcampam-arch-x86_64
+          path: /build/*.pkg.tar.zst
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
