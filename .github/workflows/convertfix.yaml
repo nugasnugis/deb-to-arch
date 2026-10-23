@@ -1,51 +1,125 @@
+
 name: Convert DEB to Arch Package
 
 on:
   workflow_dispatch:
     inputs:
       deb_url:
-        description: 'Direct URL to the .deb package'
+        description: Direct URL to the .deb package
         required: true
         type: string
+
+permissions:
+  contents: read
 
 jobs:
   convert:
     runs-on: ubuntu-latest
+
     container:
       image: archlinux:latest
-      options: --privileged 
 
     steps:
-    # Set up system tools and download the official standalone debtap script directly
-    - name: Setup Environment and Install Tools
-      run: |
-        pacman-key --init
-        pacman-key --populate archlinux
-        pacman -Syu --noconfirm --needed base-devel git wget zstd pkgfile
-        
-        # Download debtap directly from source into the global execution path
-        wget -O /usr/bin/debtap https://githubusercontent.com
-        chmod +x /usr/bin/debtap
+      - name: Setup Environment
+        shell: bash
+        run: |
+          set -euo pipefail
 
-    - name: Update Debtap Database
-      run: |
-        pkgfile -u
-        debtap -u
+          pacman-key --init
+          pacman-key --populate archlinux
 
-    - name: Download and Convert Package
-      run: |
-        mkdir -p /workspace
-        cd /workspace
-        wget -O package.deb "${{ github.event.inputs.deb_url }}"
-        # Automatically bypasses all configuration prompts as root
-        yes "" | debtap package.deb
+          pacman -Syu --noconfirm --needed \
+            base-devel \
+            binutils \
+            bash \
+            git \
+            curl \
+            fakeroot \
+            pkgfile \
+            file
 
-    - name: Install Node.js for Artifact Upload
-      run: pacman -S --noconfirm nodejs
+      - name: Install Debtap
+        shell: bash
+        run: |
+          set -euo pipefail
 
-    - name: Upload Arch Package Artifact
-      uses: actions/upload-artifact@v4
-      with:
-        name: arch-package
-        path: /workspace/*.pkg.tar.*
-        if-no-files-found: error
+          curl -fL --retry 3 \
+            https://raw.githubusercontent.com/helixarch/debtap/master/debtap \
+            -o /usr/bin/debtap
+
+          chmod 755 /usr/bin/debtap
+
+          debtap --version
+
+      - name: Update Debtap Database
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          debtap -u
+
+      - name: Download DEB
+        shell: bash
+        env:
+          DEB_URL: ${{ inputs.deb_url }}
+        run: |
+          set -euo pipefail
+
+          mkdir -p /workspace/output
+          cd /workspace
+
+          curl -fL --retry 3 \
+            "$DEB_URL" \
+            -o package.deb
+
+          test -s package.deb
+          file package.deb
+
+          # Reject non-DEB downloads
+          ar t package.deb >/dev/null
+
+      - name: Convert DEB to Arch Package
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd /workspace
+
+          # Non-interactive conversion.
+          # -Q bypasses all questions.
+          debtap -Q -o /workspace/output package.deb
+
+          echo "Conversion finished."
+          ls -lh /workspace/output/
+
+          find /workspace/output \
+            -maxdepth 1 \
+            -type f \
+            -name '*.pkg.tar.*' \
+            -print -quit | grep -q .
+
+      - name: Validate Arch Package
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          shopt -s nullglob
+          packages=(/workspace/output/*.pkg.tar.*)
+
+          if (( ${#packages[@]} == 0 )); then
+            echo "ERROR: No Arch package found."
+            exit 1
+          fi
+
+          for pkg in "${packages[@]}"; do
+            echo "Checking: $pkg"
+            pacman -Qip "$pkg"
+          done
+
+      - name: Upload Arch Package
+        uses: actions/upload-artifact@v4
+        with:
+          name: arch-package
+          path: /workspace/output/*.pkg.tar.*
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
