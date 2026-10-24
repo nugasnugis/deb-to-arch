@@ -29,7 +29,7 @@ jobs:
           cat > /build/PKGBUILD <<'PKGBUILD'
           pkgname=linuxcampam
           pkgver=0.9.7.5
-          pkgrel=2
+          pkgrel=3
           pkgdesc="Linux camera facial authentication PAM module and daemon"
           arch=('x86_64')
           url="https://github.com/Vladush/LinuxCamPAM"
@@ -97,14 +97,25 @@ jobs:
           runuser -u builder -- bash -euc '
             cd /build
             makepkg --syncdeps --cleanbuild --noconfirm
-            install -m 0644 linuxcampam-*.pkg.tar.zst /out/
+            # Copy only the runtime package, not the optional debug-symbol package.
+            pkg=$(find . -maxdepth 1 -type f -name "linuxcampam-[0-9]*.pkg.tar.zst" -print -quit)
+            test -n "$pkg"
+            install -m 0644 "$pkg" /out/
           '
 
-          # Verify the generated archive actually contains both model files.
-          pkg=$(find /out -maxdepth 1 -name 'linuxcampam-*.pkg.tar.zst' -print -quit)
-          test -n "$pkg"
-          bsdtar -tf "$pkg" | grep -Fx 'usr/share/linuxcampam/models/face_detection_yunet_2023mar.onnx'
-          bsdtar -tf "$pkg" | grep -Fx 'usr/share/linuxcampam/models/face_recognition_sface_2021dec.onnx'
+          # Verify the generated archive and print useful diagnostics on failure.
+          pkg=$(find /out -maxdepth 1 -type f -name 'linuxcampam-[0-9]*.pkg.tar.zst' -print -quit)
+          if [[ -z "$pkg" ]]; then
+            echo "ERROR: runtime package was not copied to /out"
+            echo "Contents of /build:"
+            find /build -maxdepth 1 -type f -printf '%f\\n'
+            echo "Contents of /out:"
+            find /out -maxdepth 1 -type f -printf '%f\\n'
+            exit 1
+          fi
+          echo "Verifying package: $pkg"
+          bsdtar -tf "$pkg" | sed 's#^\\./##' | grep -Fx 'usr/share/linuxcampam/models/face_detection_yunet_2023mar.onnx'
+          bsdtar -tf "$pkg" | sed 's#^\\./##' | grep -Fx 'usr/share/linuxcampam/models/face_recognition_sface_2021dec.onnx'
           bsdtar -xOf "$pkg" usr/share/linuxcampam/models/face_detection_yunet_2023mar.onnx | sha256sum
           bsdtar -xOf "$pkg" usr/share/linuxcampam/models/face_recognition_sface_2021dec.onnx | sha256sum
 
