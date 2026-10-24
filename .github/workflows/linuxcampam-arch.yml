@@ -29,13 +29,14 @@ jobs:
           cat > /build/PKGBUILD <<'PKGBUILD'
           pkgname=linuxcampam
           pkgver=0.9.7.5
-          pkgrel=3
+          pkgrel=4
           pkgdesc="Linux camera facial authentication PAM module and daemon"
           arch=('x86_64')
           url="https://github.com/Vladush/LinuxCamPAM"
           license=('GPL-3.0-or-later')
           depends=('opencv' 'eigen' 'boost-libs' 'fmt' 'spdlog' 'gcc-libs' 'glibc')
           makedepends=('git' 'cmake' 'ninja' 'pkgconf' 'curl' 'wget' 'unzip')
+          install=linuxcampam.install
           source=("git+https://github.com/Vladush/LinuxCamPAM.git#branch=master"
                   "face_detection_yunet_2023mar.onnx::https://github.com/opencv/opencv_zoo/raw/main/models/face_detection_yunet/face_detection_yunet_2023mar.onnx"
                   "face_recognition_sface_2021dec.onnx::https://github.com/opencv/opencv_zoo/raw/main/models/face_recognition_sface/face_recognition_sface_2021dec.onnx")
@@ -70,6 +71,49 @@ jobs:
             cd "${srcdir}/${_srcname}"
             DESTDIR="${pkgdir}" cmake --install build
 
+            # Install an Arch-safe PAM helper. It backs up system-auth before
+            # adding face authentication and keeps the existing password stack.
+            install -Dm0755 /dev/stdin "${pkgdir}/usr/bin/linuxcampam-pam-enable" <<'PAMHELPER'
+          #!/usr/bin/bash
+          set -euo pipefail
+          pamfile=/etc/pam.d/system-auth
+          module_line='auth sufficient pam_linuxcampam.so'
+          if [[ $EUID -ne 0 ]]; then
+            echo "Run this command with sudo." >&2
+            exit 1
+          fi
+          if [[ ! -f "$pamfile" ]]; then
+            echo "ERROR: $pamfile not found; no PAM files were changed." >&2
+            exit 1
+          fi
+          if grep -Eq '^[[:space:]]*auth[[:space:]].*pam_linuxcampam\.so' "$pamfile"; then
+            echo "LinuxCamPAM is already configured in $pamfile."
+            exit 0
+          fi
+          if ! grep -Eq '^[[:space:]]*auth[[:space:]].*pam_unix\.so' "$pamfile"; then
+            echo "ERROR: could not find an auth pam_unix.so line; refusing to edit PAM." >&2
+            exit 1
+          fi
+          stamp=$(date +%Y%m%d_%H%M%S)
+          backup="${pamfile}.linuxcampam.${stamp}.bak"
+          cp -a -- "$pamfile" "$backup"
+          tmp=$(mktemp "${pamfile}.XXXXXX")
+          trap 'rm -f -- "$tmp"' EXIT
+          awk -v add="$module_line" '
+            !done && /^[[:space:]]*auth[[:space:]].*pam_unix\.so/ { print add; done=1 }
+            { print }
+            END { if (!done) exit 2 }
+          ' "$pamfile" > "$tmp"
+          chmod --reference="$pamfile" "$tmp"
+          chown --reference="$pamfile" "$tmp"
+          cat "$tmp" > "$pamfile"
+          rm -f -- "$tmp"
+          trap - EXIT
+          echo "Enabled LinuxCamPAM in $pamfile."
+          echo "Backup: $backup"
+          echo "Password authentication remains in the PAM stack as fallback."
+          PAMHELPER
+
             # Ship the AI models: the daemon hardcodes these paths.
             install -d "${pkgdir}/usr/share/linuxcampam/models"
             install -m 0644 "${srcdir}/face_detection_yunet_2023mar.onnx" \
@@ -92,6 +136,18 @@ jobs:
             test -s "${pkgdir}/usr/share/linuxcampam/models/face_recognition_sface_2021dec.onnx"
           }
           PKGBUILD
+
+          cat > /build/linuxcampam.install <<'INSTALLSCRIPT'
+          post_install() {
+            echo "LinuxCamPAM installed. To enable face auth in Arch PAM, run: sudo linuxcampam-pam-enable"
+            echo "The helper creates a timestamped backup and preserves password authentication."
+          }
+
+          post_upgrade() {
+            echo "LinuxCamPAM upgraded. PAM settings were not changed automatically."
+            echo "To enable face auth (with an automatic backup), run: sudo linuxcampam-pam-enable"
+          }
+          INSTALLSCRIPT
 
           chown -R builder:builder /build /out
           runuser -u builder -- bash -euc '
