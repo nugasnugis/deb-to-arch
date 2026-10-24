@@ -139,13 +139,19 @@ jobs:
 
           cat > /build/linuxcampam.install <<'INSTALLSCRIPT'
           post_install() {
-            echo "LinuxCamPAM installed. To enable face auth in Arch PAM, run: sudo linuxcampam-pam-enable"
-            echo "The helper creates a timestamped backup and preserves password authentication."
+            echo "Enabling LinuxCamPAM in Arch PAM (with a timestamped backup)..."
+            /usr/bin/linuxcampam-pam-enable || {
+              echo "WARNING: PAM was not changed automatically. Password login remains untouched."
+              echo "If you want to enable it later, run: sudo linuxcampam-pam-enable"
+            }
           }
 
           post_upgrade() {
-            echo "LinuxCamPAM upgraded. PAM settings were not changed automatically."
-            echo "To enable face auth (with an automatic backup), run: sudo linuxcampam-pam-enable"
+            echo "Checking whether LinuxCamPAM needs to be added to Arch PAM..."
+            /usr/bin/linuxcampam-pam-enable || {
+              echo "WARNING: PAM was not changed. Review the message above."
+              echo "You can retry later with: sudo linuxcampam-pam-enable"
+            }
           }
           INSTALLSCRIPT
 
