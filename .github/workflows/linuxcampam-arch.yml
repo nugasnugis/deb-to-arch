@@ -17,7 +17,7 @@ jobs:
       - name: Install build tools
         run: |
           pacman -Syu --noconfirm
-          pacman -S --needed --noconfirm             base-devel git cmake ninja pkgconf curl wget ca-certificates             opencv eigen boost fmt spdlog nlohmann-json
+          pacman -S --needed --noconfirm             base-devel git cmake ninja pkgconf curl wget unzip ca-certificates             opencv eigen boost fmt spdlog nlohmann-json
 
       - name: Create unprivileged build user
         run: |
@@ -35,7 +35,7 @@ jobs:
           url="https://github.com/Vladush/LinuxCamPAM"
           license=('GPL-3.0-or-later')
           depends=('opencv' 'eigen' 'boost-libs' 'fmt' 'spdlog' 'gcc-libs' 'glibc')
-          makedepends=('git' 'cmake' 'ninja' 'pkgconf' 'curl')
+          makedepends=('git' 'cmake' 'ninja' 'pkgconf' 'curl' 'wget' 'unzip')
           source=("git+https://github.com/Vladush/LinuxCamPAM.git#branch=master"
                   "face_detection_yunet_2023mar.onnx::https://github.com/opencv/opencv_zoo/raw/main/models/face_detection_yunet/face_detection_yunet_2023mar.onnx"
                   "face_recognition_sface_2021dec.onnx::https://github.com/opencv/opencv_zoo/raw/main/models/face_recognition_sface/face_recognition_sface_2021dec.onnx")
