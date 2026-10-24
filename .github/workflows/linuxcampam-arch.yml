@@ -36,7 +36,7 @@ jobs:
           license=('GPL-3.0-or-later')
           depends=('opencv' 'eigen' 'boost-libs' 'fmt' 'spdlog' 'gcc-libs' 'glibc')
           makedepends=('git' 'cmake' 'ninja' 'pkgconf' 'curl')
-          source=("git+https://github.com/Vladush/LinuxCamPAM.git#tag=v${pkgver}"
+          source=("git+https://github.com/Vladush/LinuxCamPAM.git#branch=master"
                   "face_detection_yunet_2023mar.onnx::https://github.com/opencv/opencv_zoo/raw/main/models/face_detection_yunet/face_detection_yunet_2023mar.onnx"
                   "face_recognition_sface_2021dec.onnx::https://github.com/opencv/opencv_zoo/raw/main/models/face_recognition_sface/face_recognition_sface_2021dec.onnx")
           sha256sums=('SKIP'
