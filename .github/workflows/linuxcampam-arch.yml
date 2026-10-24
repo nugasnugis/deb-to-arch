@@ -1,0 +1,117 @@
+name: Build LinuxCamPAM for Arch (models included)
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - ".github/workflows/linuxcampam-arch.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container: archlinux:latest
+    steps:
+      - name: Install build tools
+        run: |
+          pacman -Syu --noconfirm
+          pacman -S --needed --noconfirm             base-devel git cmake ninja pkgconf curl ca-certificates             opencv eigen3 boost fmt spdlog nlohmann-json
+
+      - name: Create unprivileged build user
+        run: |
+          useradd --create-home builder
+          install -d -o builder -g builder /build /out
+
+      - name: Build and package
+        run: |
+          cat > /build/PKGBUILD <<'PKGBUILD'
+          pkgname=linuxcampam
+          pkgver=0.9.7.5
+          pkgrel=2
+          pkgdesc="Linux camera facial authentication PAM module and daemon"
+          arch=('x86_64')
+          url="https://github.com/Vladush/LinuxCamPAM"
+          license=('GPL-3.0-or-later')
+          depends=('opencv' 'eigen' 'boost-libs' 'fmt' 'spdlog' 'gcc-libs' 'glibc')
+          makedepends=('git' 'cmake' 'ninja' 'pkgconf' 'curl')
+          source=("git+https://github.com/Vladush/LinuxCamPAM.git#tag=v${pkgver}"
+                  "face_detection_yunet_2023mar.onnx::https://github.com/opencv/opencv_zoo/raw/main/models/face_detection_yunet/face_detection_yunet_2023mar.onnx"
+                  "face_recognition_sface_2021dec.onnx::https://github.com/opencv/opencv_zoo/raw/main/models/face_recognition_sface/face_recognition_sface_2021dec.onnx")
+          sha256sums=('SKIP'
+                      '8f2383e4dd3cfbb4553ea8718107fc0423210dc964f9f4280604804ed2552fa4'
+                      '0ba9fbfa01b5270c96627c4ef784da859931e02f04419c829e83484087c34e79')
+          _srcname=LinuxCamPAM
+
+          prepare() {
+            cd "${srcdir}/${_srcname}"
+            # Do not install Debian-specific PAM profile snippets on Arch.
+            sed -i '/INSTALL_PAM_AUTH_UPDATE_PROFILE/d' CMakeLists.txt || true
+            # Strip Debian-specific Git hook installation if present.
+            sed -i '/git config.*core.hooksPath/d' CMakeLists.txt || true
+          }
+
+          build() {
+            cd "${srcdir}/${_srcname}"
+            # Upstream script prepares its bundled OpenCV build.
+            SKIP_DEPS=1 bash scripts/build_opencv.sh
+            cmake -S . -B build -G Ninja \
+              -DCMAKE_BUILD_TYPE=Release \
+              -DCMAKE_INSTALL_PREFIX=/usr \
+              -DCMAKE_INSTALL_LIBDIR=lib \
+              -DCMAKE_INSTALL_SYSCONFDIR=/etc \
+              -DINSTALL_PAM_AUTH_UPDATE_PROFILE=OFF \
+              -DSYSTEMD_UNIT_DIR=/usr/lib/systemd/system
+            cmake --build build --parallel
+          }
+
+          package() {
+            cd "${srcdir}/${_srcname}"
+            DESTDIR="${pkgdir}" cmake --install build
+
+            # Ship the AI models: the daemon hardcodes these paths.
+            install -d "${pkgdir}/usr/share/linuxcampam/models"
+            install -m 0644 "${srcdir}/face_detection_yunet_2023mar.onnx" \
+              "${pkgdir}/usr/share/linuxcampam/models/"
+            install -m 0644 "${srcdir}/face_recognition_sface_2021dec.onnx" \
+              "${pkgdir}/usr/share/linuxcampam/models/"
+
+            # Keep the service unit; do not package Debian PAM profile config.
+            install -d "${pkgdir}/usr/lib/systemd/system"
+            if [[ -f "${srcdir}/${_srcname}/linuxcampam.service" ]]; then
+              install -m 0644 "${srcdir}/${_srcname}/linuxcampam.service" \
+                "${pkgdir}/usr/lib/systemd/system/linuxcampam.service"
+            elif [[ -f "${srcdir}/${_srcname}/systemd/linuxcampam.service" ]]; then
+              install -m 0644 "${srcdir}/${_srcname}/systemd/linuxcampam.service" \
+                "${pkgdir}/usr/lib/systemd/system/linuxcampam.service"
+            fi
+
+            # Fail closed if model payloads were omitted/empty.
+            test -s "${pkgdir}/usr/share/linuxcampam/models/face_detection_yunet_2023mar.onnx"
+            test -s "${pkgdir}/usr/share/linuxcampam/models/face_recognition_sface_2021dec.onnx"
+          }
+          PKGBUILD
+
+          chown -R builder:builder /build /out
+          runuser -u builder -- bash -euc '
+            cd /build
+            makepkg --syncdeps --cleanbuild --noconfirm
+            install -m 0644 linuxcampam-*.pkg.tar.zst /out/
+          '
+
+          # Verify the generated archive actually contains both model files.
+          pkg=$(find /out -maxdepth 1 -name 'linuxcampam-*.pkg.tar.zst' -print -quit)
+          test -n "$pkg"
+          bsdtar -tf "$pkg" | grep -Fx 'usr/share/linuxcampam/models/face_detection_yunet_2023mar.onnx'
+          bsdtar -tf "$pkg" | grep -Fx 'usr/share/linuxcampam/models/face_recognition_sface_2021dec.onnx'
+          bsdtar -xOf "$pkg" usr/share/linuxcampam/models/face_detection_yunet_2023mar.onnx | sha256sum
+          bsdtar -xOf "$pkg" usr/share/linuxcampam/models/face_recognition_sface_2021dec.onnx | sha256sum
+
+      - name: Upload Arch package
+        uses: actions/upload-artifact@v4
+        with:
+          name: linuxcampam-arch-x86_64
+          path: /out/linuxcampam-*.pkg.tar.zst
+          if-no-files-found: error
+          retention-days: 14
