@@ -46,8 +46,8 @@ jobs:
 
           prepare() {
             cd "${srcdir}/${_srcname}"
-            # Do not install Debian-specific PAM profile snippets on Arch.
-            sed -i '/INSTALL_PAM_AUTH_UPDATE_PROFILE/d' CMakeLists.txt || true
+            # Disable the Debian-specific PAM profile while preserving CMake if/endif nesting.
+            sed -i 's/option(INSTALL_PAM_AUTH_UPDATE_PROFILE "Install the Debian pam-auth-update profile" ON)/option(INSTALL_PAM_AUTH_UPDATE_PROFILE "Install the Debian pam-auth-update profile" OFF)/' CMakeLists.txt
             # Strip Debian-specific Git hook installation if present.
             sed -i '/git config.*core.hooksPath/d' CMakeLists.txt || true
           }
